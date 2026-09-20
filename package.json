@@ -1,0 +1,14 @@
+{
+  "name": "exiled-bot",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "express": "^4.18.2",
+    "firebase-admin": "^12.0.0",
+    "cors": "^2.8.5"
+  }
+}
