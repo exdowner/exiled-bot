@@ -12,6 +12,9 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const FIREBASE_KEY_JSON = process.env.FIREBASE_KEY;
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
+const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
+const DISCORD_REDIRECT_URI = process.env.DISCORD_REDIRECT_URI;
 
 if (!DISCORD_TOKEN || !CHANNEL_ID || !FIREBASE_KEY_JSON) {
   console.error('❌ Faltando variáveis de ambiente obrigatórias!');
@@ -40,12 +43,19 @@ if (RESEND_API_KEY) {
   console.warn('⚠️ RESEND_API_KEY não configurada. E-mails não serão enviados.');
 }
 
+// ==== DISCORD OAUTH2 ====
+if (DISCORD_CLIENT_ID && DISCORD_CLIENT_SECRET && DISCORD_REDIRECT_URI) {
+  console.log('🔐 Discord OAuth2 configurado');
+} else {
+  console.warn('⚠️ Discord OAuth2 não configurado. Login com Discord não vai funcionar.');
+}
+
 // ==== EXPRESS ====
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 
-// ==== DISCORD CLIENT ====
+// ==== DISCORD BOT CLIENT ====
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 let discordReady = false;
 
@@ -54,7 +64,7 @@ client.once('ready', () => {
   discordReady = true;
 });
 
-client.on('error', (e) => console.error('Discord error:', e));
+client.on('error', (e) => console.error('Discord bot error:', e));
 
 client.login(DISCORD_TOKEN);
 
@@ -64,7 +74,8 @@ app.get('/', (req, res) => {
     status: 'ok',
     bot: discordReady,
     botTag: client.user ? client.user.tag : null,
-    mailer: !!RESEND_API_KEY
+    mailer: !!RESEND_API_KEY,
+    discordOAuth: !!(DISCORD_CLIENT_ID && DISCORD_CLIENT_SECRET && DISCORD_REDIRECT_URI)
   });
 });
 
@@ -167,6 +178,75 @@ app.post('/welcome', async (req, res) => {
     res.json({ ok: true, id: data.id });
   } catch (err) {
     console.error('Erro /welcome:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==== ROTA: DISCORD OAUTH2 CALLBACK ====
+app.post('/discord/callback', async (req, res) => {
+  try {
+    const { code, redirect_uri } = req.body;
+    if (!code) return res.status(400).json({ error: 'Código faltando' });
+
+    const redirectUri = redirect_uri || DISCORD_REDIRECT_URI;
+    if (!DISCORD_CLIENT_ID || !DISCORD_CLIENT_SECRET || !redirectUri) {
+      return res.status(500).json({ error: 'Discord OAuth2 não configurado no servidor' });
+    }
+
+    // 1. Troca code por access_token
+    const tokenParams = new URLSearchParams();
+    tokenParams.append('client_id', DISCORD_CLIENT_ID);
+    tokenParams.append('client_secret', DISCORD_CLIENT_SECRET);
+    tokenParams.append('grant_type', 'authorization_code');
+    tokenParams.append('code', code);
+    tokenParams.append('redirect_uri', redirectUri);
+
+    const tokenRes = await fetch('https://discord.com/api/v10/oauth2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: tokenParams.toString()
+    });
+
+    if (!tokenRes.ok) {
+      const err = await tokenRes.text();
+      throw new Error('Discord token exchange falhou: ' + tokenRes.status + ' ' + err);
+    }
+
+    const tokenData = await tokenRes.json();
+    const accessToken = tokenData.access_token;
+
+    // 2. Busca o perfil do usuário
+    const userRes = await fetch('https://discord.com/api/v10/users/@me', {
+      headers: { 'Authorization': 'Bearer ' + accessToken }
+    });
+
+    if (!userRes.ok) {
+      const err = await userRes.text();
+      throw new Error('Discord user fetch falhou: ' + userRes.status + ' ' + err);
+    }
+
+    const discordUser = await userRes.json();
+
+    // 3. Gera custom token do Firebase
+    const customToken = await admin.auth().createCustomToken('discord_' + discordUser.id, {
+      discordId: discordUser.id,
+      discordUsername: discordUser.username
+    });
+
+    console.log(`🔐 Login Discord: ${discordUser.username}#${discordUser.id}`);
+
+    res.json({
+      ok: true,
+      customToken: customToken,
+      user: {
+        id: discordUser.id,
+        username: discordUser.username,
+        email: discordUser.email || '',
+        avatar: discordUser.avatar || ''
+      }
+    });
+  } catch (err) {
+    console.error('Erro /discord/callback:', err);
     res.status(500).json({ error: err.message });
   }
 });
