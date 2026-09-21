@@ -15,6 +15,8 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
 const DISCORD_REDIRECT_URI = process.env.DISCORD_REDIRECT_URI;
+const GROQ_KEY = process.env.GROQ_KEY;
+const AGNES_KEY = process.env.AGNES_KEY;
 
 if (!DISCORD_TOKEN || !CHANNEL_ID || !FIREBASE_KEY_JSON) {
   console.error('❌ Faltando variáveis de ambiente obrigatórias!');
@@ -36,24 +38,86 @@ admin.initializeApp({
 });
 const db = admin.database();
 
-// ==== RESEND ====
-if (RESEND_API_KEY) {
-  console.log('📧 Resend configurado');
-} else {
-  console.warn('⚠️ RESEND_API_KEY não configurada. E-mails não serão enviados.');
-}
-
-// ==== DISCORD OAUTH2 ====
-if (DISCORD_CLIENT_ID && DISCORD_CLIENT_SECRET && DISCORD_REDIRECT_URI) {
-  console.log('🔐 Discord OAuth2 configurado');
-} else {
-  console.warn('⚠️ Discord OAuth2 não configurado. Login com Discord não vai funcionar.');
-}
+// ==== LOGS DE CONFIG ====
+if (RESEND_API_KEY) console.log('📧 Resend configurado'); else console.warn('⚠️ RESEND_API_KEY não configurada');
+if (DISCORD_CLIENT_ID && DISCORD_CLIENT_SECRET && DISCORD_REDIRECT_URI) console.log('🔐 Discord OAuth2 configurado'); else console.warn('⚠️ Discord OAuth2 incompleto');
+if (GROQ_KEY) console.log('🤖 Groq proxy ativo'); else console.warn('⚠️ GROQ_KEY não configurada');
+if (AGNES_KEY) console.log('🎨 Agnes proxy ativo'); else console.warn('⚠️ AGNES_KEY não configurada');
 
 // ==== EXPRESS ====
 const app = express();
 app.use(cors());
+
+// Middleware especial pro /groq/stt (multipart)
+app.use('/groq/stt', express.raw({ type: '*/*', limit: '25mb' }));
+
+// JSON normal pras outras rotas
 app.use(express.json({ limit: '20mb' }));
+
+// ==== PROXY GROQ + AGNES ====
+const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_STT_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
+const AGNES_IMG_URL = 'https://apihub.agnes-ai.com/v1/images/generations';
+
+// Chat (texto + visão)
+app.post('/groq/chat', async (req, res) => {
+  try {
+    if (!GROQ_KEY) return res.status(500).json({ error: 'GROQ_KEY não configurada' });
+    const r = await fetch(GROQ_CHAT_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + GROQ_KEY
+      },
+      body: JSON.stringify(req.body)
+    });
+    const data = await r.json();
+    res.status(r.status).json(data);
+  } catch (err) {
+    console.error('Erro /groq/chat:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Transcrição de áudio (Whisper)
+app.post('/groq/stt', async (req, res) => {
+  try {
+    if (!GROQ_KEY) return res.status(500).json({ error: 'GROQ_KEY não configurada' });
+    const r = await fetch(GROQ_STT_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + GROQ_KEY,
+        'Content-Type': req.headers['content-type'] || 'multipart/form-data'
+      },
+      body: req.body
+    });
+    const data = await r.json();
+    res.status(r.status).json(data);
+  } catch (err) {
+    console.error('Erro /groq/stt:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Geração de imagem (Agnes)
+app.post('/agnes/image', async (req, res) => {
+  try {
+    if (!AGNES_KEY) return res.status(500).json({ error: 'AGNES_KEY não configurada' });
+    const r = await fetch(AGNES_IMG_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + AGNES_KEY
+      },
+      body: JSON.stringify(req.body)
+    });
+    const data = await r.json();
+    res.status(r.status).json(data);
+  } catch (err) {
+    console.error('Erro /agnes/image:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ==== DISCORD BOT CLIENT ====
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -75,7 +139,9 @@ app.get('/', (req, res) => {
     bot: discordReady,
     botTag: client.user ? client.user.tag : null,
     mailer: !!RESEND_API_KEY,
-    discordOAuth: !!(DISCORD_CLIENT_ID && DISCORD_CLIENT_SECRET && DISCORD_REDIRECT_URI)
+    discordOAuth: !!(DISCORD_CLIENT_ID && DISCORD_CLIENT_SECRET && DISCORD_REDIRECT_URI),
+    groq: !!GROQ_KEY,
+    agnes: !!AGNES_KEY
   });
 });
 
@@ -83,14 +149,8 @@ app.get('/', (req, res) => {
 app.post('/welcome', async (req, res) => {
   try {
     const { email, name } = req.body;
-
-    if (!email || !name) {
-      return res.status(400).json({ error: 'email e name são obrigatórios' });
-    }
-
-    if (!RESEND_API_KEY) {
-      return res.status(500).json({ error: 'RESEND_API_KEY não configurada' });
-    }
+    if (!email || !name) return res.status(400).json({ error: 'email e name são obrigatórios' });
+    if (!RESEND_API_KEY) return res.status(500).json({ error: 'RESEND_API_KEY não configurada' });
 
     const htmlBody = `
       <!DOCTYPE html>
@@ -114,10 +174,7 @@ app.post('/welcome', async (req, res) => {
                   <td style="padding:20px 40px 30px;">
                     <h2 style="margin:0 0 16px;color:#fff;font-size:20px;font-weight:700;">Olá, ${name}!</h2>
                     <p style="margin:0 0 16px;color:#ccc;font-size:15px;line-height:1.6;">
-                      Seja bem-vindo à <strong style="color:#fff;">EXILED AI</strong>. Sua conta foi criada com sucesso e você já pode começar a usar tudo que preparamos pra você.
-                    </p>
-                    <p style="margin:0 0 24px;color:#ccc;font-size:15px;line-height:1.6;">
-                      Aqui está o que você pode fazer agora:
+                      Seja bem-vindo à <strong style="color:#fff;">EXILED AI</strong>. Sua conta foi criada com sucesso.
                     </p>
                     <table width="100%" cellpadding="0" cellspacing="0" style="background:#111;border:1px solid #222;border-radius:12px;margin-bottom:24px;">
                       <tr><td style="padding:14px 18px;border-bottom:1px solid #222;color:#e0e0e0;font-size:14px;">💬 <strong style="color:#fff;">Chat inteligente</strong> em português</td></tr>
@@ -128,9 +185,7 @@ app.post('/welcome', async (req, res) => {
                     <table width="100%" cellpadding="0" cellspacing="0">
                       <tr>
                         <td align="center">
-                          <a href="https://exdowner.github.io/EXILED-AI/" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#fff,#888);color:#000;text-decoration:none;font-weight:700;font-size:15px;border-radius:10px;letter-spacing:0.3px;">
-                            Começar a usar
-                          </a>
+                          <a href="https://exdowner.github.io/EXILED-AI/" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#fff,#888);color:#000;text-decoration:none;font-weight:700;font-size:15px;border-radius:10px;">Começar a usar</a>
                         </td>
                       </tr>
                     </table>
@@ -138,12 +193,7 @@ app.post('/welcome', async (req, res) => {
                 </tr>
                 <tr>
                   <td style="padding:20px 30px;background:#050505;border-top:1px solid #222;text-align:center;">
-                    <p style="margin:0 0 6px;color:#666;font-size:12px;">
-                      Você recebeu este e-mail porque criou uma conta na EXILED AI.
-                    </p>
-                    <p style="margin:0;color:#444;font-size:11px;">
-                      © ${new Date().getFullYear()} EXILED AI. Todos os direitos reservados.
-                    </p>
+                    <p style="margin:0;color:#444;font-size:11px;">© ${new Date().getFullYear()} EXILED AI. Todos os direitos reservados.</p>
                   </td>
                 </tr>
               </table>
@@ -190,10 +240,9 @@ app.post('/discord/callback', async (req, res) => {
 
     const redirectUri = redirect_uri || DISCORD_REDIRECT_URI;
     if (!DISCORD_CLIENT_ID || !DISCORD_CLIENT_SECRET || !redirectUri) {
-      return res.status(500).json({ error: 'Discord OAuth2 não configurado no servidor' });
+      return res.status(500).json({ error: 'Discord OAuth2 não configurado' });
     }
 
-    // 1. Troca code por access_token
     const tokenParams = new URLSearchParams();
     tokenParams.append('client_id', DISCORD_CLIENT_ID);
     tokenParams.append('client_secret', DISCORD_CLIENT_SECRET);
@@ -215,7 +264,6 @@ app.post('/discord/callback', async (req, res) => {
     const tokenData = await tokenRes.json();
     const accessToken = tokenData.access_token;
 
-    // 2. Busca o perfil do usuário
     const userRes = await fetch('https://discord.com/api/v10/users/@me', {
       headers: { 'Authorization': 'Bearer ' + accessToken }
     });
@@ -227,13 +275,12 @@ app.post('/discord/callback', async (req, res) => {
 
     const discordUser = await userRes.json();
 
-    // 3. Gera custom token do Firebase
     const customToken = await admin.auth().createCustomToken('discord_' + discordUser.id, {
       discordId: discordUser.id,
       discordUsername: discordUser.username
     });
 
-    console.log(`🔐 Login Discord: ${discordUser.username}#${discordUser.id}`);
+    console.log(`🔐 Login Discord: ${discordUser.username} (${discordUser.id})`);
 
     res.json({
       ok: true,
@@ -241,6 +288,7 @@ app.post('/discord/callback', async (req, res) => {
       user: {
         id: discordUser.id,
         username: discordUser.username,
+        global_name: discordUser.global_name || '',
         email: discordUser.email || '',
         avatar: discordUser.avatar || ''
       }
