@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const nodemailer = require('nodemailer');
 const {
   Client, GatewayIntentBits, ButtonBuilder, ButtonStyle,
   ActionRowBuilder, EmbedBuilder, AttachmentBuilder
@@ -12,8 +11,7 @@ const PORT = process.env.PORT || 3000;
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const FIREBASE_KEY_JSON = process.env.FIREBASE_KEY;
-const GMAIL_USER = process.env.GMAIL_USER;
-const GMAIL_PASS = process.env.GMAIL_PASS;
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
 
 if (!DISCORD_TOKEN || !CHANNEL_ID || !FIREBASE_KEY_JSON) {
   console.error('❌ Faltando variáveis de ambiente obrigatórias!');
@@ -35,19 +33,11 @@ admin.initializeApp({
 });
 const db = admin.database();
 
-// ==== NODEMAILER (Gmail) ====
-let mailer = null;
-if (GMAIL_USER && GMAIL_PASS) {
-  mailer = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: GMAIL_USER,
-      pass: GMAIL_PASS.replace(/\s+/g, '') // remove espaços da senha de app
-    }
-  });
-  console.log('📧 Nodemailer configurado para', GMAIL_USER);
+// ==== RESEND ====
+if (RESEND_API_KEY) {
+  console.log('📧 Resend configurado');
 } else {
-  console.warn('⚠️ GMAIL_USER ou GMAIL_PASS não configurados. E-mails não serão enviados.');
+  console.warn('⚠️ RESEND_API_KEY não configurada. E-mails não serão enviados.');
 }
 
 // ==== EXPRESS ====
@@ -70,7 +60,12 @@ client.login(DISCORD_TOKEN);
 
 // ==== HEALTH CHECK ====
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', bot: discordReady, botTag: client.user ? client.user.tag : null, mailer: !!mailer });
+  res.json({
+    status: 'ok',
+    bot: discordReady,
+    botTag: client.user ? client.user.tag : null,
+    mailer: !!RESEND_API_KEY
+  });
 });
 
 // ==== ROTA: ENVIAR E-MAIL DE BOAS-VINDAS ====
@@ -82,36 +77,28 @@ app.post('/welcome', async (req, res) => {
       return res.status(400).json({ error: 'email e name são obrigatórios' });
     }
 
-    if (!mailer) {
-      return res.status(500).json({ error: 'Servidor de e-mail não configurado' });
+    if (!RESEND_API_KEY) {
+      return res.status(500).json({ error: 'RESEND_API_KEY não configurada' });
     }
 
     const htmlBody = `
       <!DOCTYPE html>
       <html>
-      <head>
-        <meta charset="UTF-8">
-      </head>
+      <head><meta charset="UTF-8"></head>
       <body style="margin:0;padding:0;background:#000;font-family:'Segoe UI',system-ui,sans-serif;">
         <table width="100%" cellpadding="0" cellspacing="0" style="background:#000;padding:40px 20px;">
           <tr>
             <td align="center">
               <table width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#0a0a0a;border:1px solid #222;border-radius:20px;overflow:hidden;">
-                
-                <!-- HEADER -->
                 <tr>
                   <td align="center" style="padding:40px 30px 20px;">
-                    <div style="width:72px;height:72px;margin:0 auto 20px;background:linear-gradient(135deg,#fff,#888);border-radius:18px;line-height:72px;text-align:center;font-size:36px;">
-                      ⬛
-                    </div>
+                    <div style="width:72px;height:72px;margin:0 auto 20px;background:linear-gradient(135deg,#fff,#888);border-radius:18px;line-height:72px;text-align:center;font-size:36px;">⬛</div>
                     <h1 style="margin:0 0 8px;font-size:26px;font-weight:800;color:#fff;letter-spacing:-0.8px;">
                       EXILED <span style="background:linear-gradient(135deg,#fff,#888);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;">AI</span>
                     </h1>
                     <p style="margin:0;color:#888;font-size:14px;">Sua jornada começou 🚀</p>
                   </td>
                 </tr>
-
-                <!-- BODY -->
                 <tr>
                   <td style="padding:20px 40px 30px;">
                     <h2 style="margin:0 0 16px;color:#fff;font-size:20px;font-weight:700;">Olá, ${name}!</h2>
@@ -121,32 +108,12 @@ app.post('/welcome', async (req, res) => {
                     <p style="margin:0 0 24px;color:#ccc;font-size:15px;line-height:1.6;">
                       Aqui está o que você pode fazer agora:
                     </p>
-
-                    <!-- FEATURES -->
                     <table width="100%" cellpadding="0" cellspacing="0" style="background:#111;border:1px solid #222;border-radius:12px;margin-bottom:24px;">
-                      <tr>
-                        <td style="padding:14px 18px;border-bottom:1px solid #222;color:#e0e0e0;font-size:14px;">
-                          💬 <strong style="color:#fff;">Chat inteligente</strong> em português
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding:14px 18px;border-bottom:1px solid #222;color:#e0e0e0;font-size:14px;">
-                          🎨 <strong style="color:#fff;">Geração de imagens</strong> com IA
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding:14px 18px;border-bottom:1px solid #222;color:#e0e0e0;font-size:14px;">
-                          💻 <strong style="color:#fff;">Modo código</strong> pra programar
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding:14px 18px;color:#e0e0e0;font-size:14px;">
-                          🎁 <strong style="color:#fff;">Convide amigos</strong> e ganhe Premium grátis
-                        </td>
-                      </tr>
+                      <tr><td style="padding:14px 18px;border-bottom:1px solid #222;color:#e0e0e0;font-size:14px;">💬 <strong style="color:#fff;">Chat inteligente</strong> em português</td></tr>
+                      <tr><td style="padding:14px 18px;border-bottom:1px solid #222;color:#e0e0e0;font-size:14px;">🎨 <strong style="color:#fff;">Geração de imagens</strong> com IA</td></tr>
+                      <tr><td style="padding:14px 18px;border-bottom:1px solid #222;color:#e0e0e0;font-size:14px;">💻 <strong style="color:#fff;">Modo código</strong> pra programar</td></tr>
+                      <tr><td style="padding:14px 18px;color:#e0e0e0;font-size:14px;">🎁 <strong style="color:#fff;">Convide amigos</strong> e ganhe Premium grátis</td></tr>
                     </table>
-
-                    <!-- CTA -->
                     <table width="100%" cellpadding="0" cellspacing="0">
                       <tr>
                         <td align="center">
@@ -158,8 +125,6 @@ app.post('/welcome', async (req, res) => {
                     </table>
                   </td>
                 </tr>
-
-                <!-- FOOTER -->
                 <tr>
                   <td style="padding:20px 30px;background:#050505;border-top:1px solid #222;text-align:center;">
                     <p style="margin:0 0 6px;color:#666;font-size:12px;">
@@ -170,7 +135,6 @@ app.post('/welcome', async (req, res) => {
                     </p>
                   </td>
                 </tr>
-
               </table>
             </td>
           </tr>
@@ -179,15 +143,28 @@ app.post('/welcome', async (req, res) => {
       </html>
     `;
 
-    await mailer.sendMail({
-      from: `"EXILED AI" <${GMAIL_USER}>`,
-      to: email,
-      subject: `Bem-vindo à EXILED AI, ${name}! 🚀`,
-      html: htmlBody
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + RESEND_API_KEY,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: 'EXILED AI <onboarding@resend.dev>',
+        to: email,
+        subject: `Bem-vindo à EXILED AI, ${name}! 🚀`,
+        html: htmlBody
+      })
     });
 
-    console.log(`📧 E-mail de boas-vindas enviado para ${email}`);
-    res.json({ ok: true, message: 'E-mail enviado' });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error('Resend HTTP ' + response.status + ': ' + errText);
+    }
+
+    const data = await response.json();
+    console.log(`📧 E-mail enviado para ${email} (id: ${data.id})`);
+    res.json({ ok: true, id: data.id });
   } catch (err) {
     console.error('Erro /welcome:', err);
     res.status(500).json({ error: err.message });
