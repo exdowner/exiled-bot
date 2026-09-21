@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const nodemailer = require('nodemailer');
 const {
   Client, GatewayIntentBits, ButtonBuilder, ButtonStyle,
   ActionRowBuilder, EmbedBuilder, AttachmentBuilder
@@ -11,9 +12,11 @@ const PORT = process.env.PORT || 3000;
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const FIREBASE_KEY_JSON = process.env.FIREBASE_KEY;
+const GMAIL_USER = process.env.GMAIL_USER;
+const GMAIL_PASS = process.env.GMAIL_PASS;
 
 if (!DISCORD_TOKEN || !CHANNEL_ID || !FIREBASE_KEY_JSON) {
-  console.error('❌ Faltando variáveis de ambiente!');
+  console.error('❌ Faltando variáveis de ambiente obrigatórias!');
   process.exit(1);
 }
 
@@ -22,7 +25,7 @@ let serviceAccount;
 try {
   serviceAccount = JSON.parse(FIREBASE_KEY_JSON);
 } catch (e) {
-  console.error('❌ FIREBASE_KEY inválido (não é JSON válido)');
+  console.error('❌ FIREBASE_KEY inválido');
   process.exit(1);
 }
 
@@ -31,6 +34,21 @@ admin.initializeApp({
   databaseURL: 'https://exiled-scripts-default-rtdb.firebaseio.com'
 });
 const db = admin.database();
+
+// ==== NODEMAILER (Gmail) ====
+let mailer = null;
+if (GMAIL_USER && GMAIL_PASS) {
+  mailer = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: GMAIL_USER,
+      pass: GMAIL_PASS.replace(/\s+/g, '') // remove espaços da senha de app
+    }
+  });
+  console.log('📧 Nodemailer configurado para', GMAIL_USER);
+} else {
+  console.warn('⚠️ GMAIL_USER ou GMAIL_PASS não configurados. E-mails não serão enviados.');
+}
 
 // ==== EXPRESS ====
 const app = express();
@@ -52,7 +70,128 @@ client.login(DISCORD_TOKEN);
 
 // ==== HEALTH CHECK ====
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', bot: discordReady, botTag: client.user ? client.user.tag : null });
+  res.json({ status: 'ok', bot: discordReady, botTag: client.user ? client.user.tag : null, mailer: !!mailer });
+});
+
+// ==== ROTA: ENVIAR E-MAIL DE BOAS-VINDAS ====
+app.post('/welcome', async (req, res) => {
+  try {
+    const { email, name } = req.body;
+
+    if (!email || !name) {
+      return res.status(400).json({ error: 'email e name são obrigatórios' });
+    }
+
+    if (!mailer) {
+      return res.status(500).json({ error: 'Servidor de e-mail não configurado' });
+    }
+
+    const htmlBody = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+      </head>
+      <body style="margin:0;padding:0;background:#000;font-family:'Segoe UI',system-ui,sans-serif;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background:#000;padding:40px 20px;">
+          <tr>
+            <td align="center">
+              <table width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#0a0a0a;border:1px solid #222;border-radius:20px;overflow:hidden;">
+                
+                <!-- HEADER -->
+                <tr>
+                  <td align="center" style="padding:40px 30px 20px;">
+                    <div style="width:72px;height:72px;margin:0 auto 20px;background:linear-gradient(135deg,#fff,#888);border-radius:18px;line-height:72px;text-align:center;font-size:36px;">
+                      ⬛
+                    </div>
+                    <h1 style="margin:0 0 8px;font-size:26px;font-weight:800;color:#fff;letter-spacing:-0.8px;">
+                      EXILED <span style="background:linear-gradient(135deg,#fff,#888);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;">AI</span>
+                    </h1>
+                    <p style="margin:0;color:#888;font-size:14px;">Sua jornada começou 🚀</p>
+                  </td>
+                </tr>
+
+                <!-- BODY -->
+                <tr>
+                  <td style="padding:20px 40px 30px;">
+                    <h2 style="margin:0 0 16px;color:#fff;font-size:20px;font-weight:700;">Olá, ${name}!</h2>
+                    <p style="margin:0 0 16px;color:#ccc;font-size:15px;line-height:1.6;">
+                      Seja bem-vindo à <strong style="color:#fff;">EXILED AI</strong>. Sua conta foi criada com sucesso e você já pode começar a usar tudo que preparamos pra você.
+                    </p>
+                    <p style="margin:0 0 24px;color:#ccc;font-size:15px;line-height:1.6;">
+                      Aqui está o que você pode fazer agora:
+                    </p>
+
+                    <!-- FEATURES -->
+                    <table width="100%" cellpadding="0" cellspacing="0" style="background:#111;border:1px solid #222;border-radius:12px;margin-bottom:24px;">
+                      <tr>
+                        <td style="padding:14px 18px;border-bottom:1px solid #222;color:#e0e0e0;font-size:14px;">
+                          💬 <strong style="color:#fff;">Chat inteligente</strong> em português
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:14px 18px;border-bottom:1px solid #222;color:#e0e0e0;font-size:14px;">
+                          🎨 <strong style="color:#fff;">Geração de imagens</strong> com IA
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:14px 18px;border-bottom:1px solid #222;color:#e0e0e0;font-size:14px;">
+                          💻 <strong style="color:#fff;">Modo código</strong> pra programar
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:14px 18px;color:#e0e0e0;font-size:14px;">
+                          🎁 <strong style="color:#fff;">Convide amigos</strong> e ganhe Premium grátis
+                        </td>
+                      </tr>
+                    </table>
+
+                    <!-- CTA -->
+                    <table width="100%" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td align="center">
+                          <a href="https://exdowner.github.io/EXILED-AI/" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#fff,#888);color:#000;text-decoration:none;font-weight:700;font-size:15px;border-radius:10px;letter-spacing:0.3px;">
+                            Começar a usar
+                          </a>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+
+                <!-- FOOTER -->
+                <tr>
+                  <td style="padding:20px 30px;background:#050505;border-top:1px solid #222;text-align:center;">
+                    <p style="margin:0 0 6px;color:#666;font-size:12px;">
+                      Você recebeu este e-mail porque criou uma conta na EXILED AI.
+                    </p>
+                    <p style="margin:0;color:#444;font-size:11px;">
+                      © ${new Date().getFullYear()} EXILED AI. Todos os direitos reservados.
+                    </p>
+                  </td>
+                </tr>
+
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+      </html>
+    `;
+
+    await mailer.sendMail({
+      from: `"EXILED AI" <${GMAIL_USER}>`,
+      to: email,
+      subject: `Bem-vindo à EXILED AI, ${name}! 🚀`,
+      html: htmlBody
+    });
+
+    console.log(`📧 E-mail de boas-vindas enviado para ${email}`);
+    res.json({ ok: true, message: 'E-mail enviado' });
+  } catch (err) {
+    console.error('Erro /welcome:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ==== RECEBER COMPROVANTE ====
@@ -65,18 +204,16 @@ app.post('/comprovante', async (req, res) => {
     }
 
     if (!discordReady) {
-      return res.status(503).json({ error: 'Bot inicializando. Aguarde 1 min e tente de novo.' });
+      return res.status(503).json({ error: 'Bot inicializando. Aguarde 1 min.' });
     }
 
-    // Extrai base64
     const matches = imagemBase64.match(/^data:image\/(\w+);base64,(.+)$/);
-    if (!matches) return res.status(400).json({ error: 'Formato de imagem inválido' });
+    if (!matches) return res.status(400).json({ error: 'Imagem inválida' });
 
     const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
     const buffer = Buffer.from(matches[2], 'base64');
     const attachment = new AttachmentBuilder(buffer, { name: `comprovante_${uid}.${ext}` });
 
-    // Embed
     const embed = new EmbedBuilder()
       .setTitle('💰 Novo Pedido de Upgrade')
       .setColor(0xFFD700)
@@ -88,7 +225,6 @@ app.post('/comprovante', async (req, res) => {
       .setImage(`attachment://comprovante_${uid}.${ext}`)
       .setTimestamp();
 
-    // Botões
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`liberar:${uid}`)
@@ -102,7 +238,6 @@ app.post('/comprovante', async (req, res) => {
         .setEmoji('❌')
     );
 
-    // Envia
     const channel = await client.channels.fetch(CHANNEL_ID);
     if (!channel) throw new Error('Canal não encontrado');
     await channel.send({ embeds: [embed], components: [row], files: [attachment] });
